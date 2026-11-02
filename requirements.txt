@@ -1,7 +1,2 @@
-# Smart Daily Task Assistant - Dependencies
-# This project is built using Python's standard library (urllib, json, datetime, re)
-# so it runs out-of-the-box without mandatory external packages.
-#
-# Optional packages for development or enhanced HTTP requests:
+streamlit>=1.30.0
 requests>=2.28.0
-

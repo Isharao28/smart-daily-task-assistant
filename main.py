@@ -2,7 +2,7 @@
 """
 ==============================================================================
 Project Name   : Smart Daily Task Assistant
-Description    : AI-Powered Daily Task Manager using Python and Ollama.
+Description    : AI-Powered Daily Task Manager using Python, Ollama & Streamlit.
                  Implements Agentic AI principles: Intent Recognition,
                  Action Selection, Tool Execution, and Rule-Based Fallback.
 Target Audience: B.Tech CSE students, viva presentation, and portfolio.
@@ -133,7 +133,6 @@ class TaskManagerTool:
             with open(self.filepath, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            print(f"[Warning] Failed to load tasks ({e}). Starting with empty list.")
             return []
 
     def save_tasks(self, tasks: list[dict]) -> bool:
@@ -142,8 +141,7 @@ class TaskManagerTool:
             with open(self.filepath, "w", encoding="utf-8") as f:
                 json.dump(tasks, f, indent=4, ensure_ascii=False)
             return True
-        except Exception as e:
-            print(f"[Error] Failed to save tasks to {self.filepath}: {e}")
+        except Exception:
             return False
 
     def add_task(self, title: str, priority: str = "Medium", deadline: str | None = None) -> dict:
@@ -160,7 +158,7 @@ class TaskManagerTool:
         next_id = max([t["id"] for t in tasks], default=0) + 1
 
         # Normalize priority
-        clean_priority = priority.strip().capitalize()
+        clean_priority = priority.strip().capitalize() if priority else "Medium"
         if clean_priority not in ["High", "Medium", "Low"]:
             clean_priority = "Medium"
 
@@ -169,7 +167,7 @@ class TaskManagerTool:
 
         new_task = {
             "id": next_id,
-            "title": title.strip(),
+            "title": title.strip() if title else "New Task",
             "priority": clean_priority,
             "deadline": clean_deadline,
             "status": "Pending",
@@ -223,6 +221,26 @@ class TaskManagerTool:
         self.save_tasks(tasks)
         return True, f"Task ID #{task_id} successfully marked as Completed!", target_task
 
+    def reopen_task(self, task_id: int) -> tuple[bool, str, dict | None]:
+        """
+        Reopens a completed task, changing its status back to 'Pending'.
+        """
+        tasks = self.load_tasks()
+        target_task = None
+        for task in tasks:
+            if task.get("id") == task_id:
+                target_task = task
+                break
+
+        if not target_task:
+            return False, f"Task ID #{task_id} not found.", None
+
+        target_task["status"] = "Pending"
+        if "completed_at" in target_task:
+            del target_task["completed_at"]
+        self.save_tasks(tasks)
+        return True, f"Task ID #{task_id} reopened to Pending.", target_task
+
     @staticmethod
     def _normalize_deadline(deadline: str | None) -> str | None:
         """
@@ -243,7 +261,6 @@ class TaskManagerTool:
             parsed = datetime.strptime(text, "%Y-%m-%d").date()
             return parsed.strftime("%Y-%m-%d")
         except ValueError:
-            # If invalid format, return None or raw if clean
             return None
 
 
@@ -367,7 +384,6 @@ class TaskAnalysisTool:
 
         # Try parsing JSON response from Ollama
         try:
-            # Extract JSON substring if wrapped in markdown
             json_text = raw_response
             match = re.search(r"\{.*\}", raw_response, re.DOTALL)
             if match:
@@ -498,6 +514,9 @@ def _choose_action_via_ollama(user_input: str) -> dict | None:
     """
     Requests Ollama to map natural language to a defined action schema.
     """
+    if not is_ollama_available():
+        return None
+
     system_prompt = (
         "You are an AI Agent Router for a Daily Task Assistant. "
         "Your task is to understand the user's intent and select exactly one action from the following list:\n"
@@ -521,7 +540,6 @@ def _choose_action_via_ollama(user_input: str) -> dict | None:
         return None
 
     try:
-        # Extract JSON
         match = re.search(r"\{.*\}", raw_response, re.DOTALL)
         if match:
             data = json.loads(match.group(0))
@@ -581,8 +599,6 @@ def _choose_action_via_fallback(user_input: str) -> dict:
 
     # 6. Add task intent
     if any(k in text for k in ["add", "create", "insert", "new task", "schedule", "remind me"]):
-        # Extract title
-        # Remove trigger prefix like "add task", "add my", "create"
         title = re.sub(r"^(?:please\s+)?(?:add|create|insert|schedule|remind me to)\s+(?:task\s+|a\s+task\s+|my\s+)?", "", text, flags=re.IGNORECASE).strip()
         title = title.rstrip(".")
 
@@ -598,7 +614,7 @@ def _choose_action_via_fallback(user_input: str) -> dict:
             priority = "Medium"
             title = re.sub(r"\b(?:with\s+)?medium priority\b", "", title, flags=re.IGNORECASE).strip()
 
-        # Extract deadline if present (e.g. YYYY-MM-DD or 'today' or 'tomorrow')
+        # Extract deadline if present
         deadline = None
         date_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
         if date_match:
@@ -629,314 +645,461 @@ def _choose_action_via_fallback(user_input: str) -> dict:
 
 
 # ==============================================================================
-# SEPARATE ACTION FUNCTIONS (EXECUTED BY AGENT)
+# ACTION EXECUTION HELPERS
 # ==============================================================================
 
-def action_add_task(params: dict, interactive: bool = False) -> None:
-    """Executes the Add Task action using TaskManagerTool."""
-    title = params.get("title")
-    priority = params.get("priority") or "Medium"
-    deadline = params.get("deadline")
-
-    # If parameters were not extracted (or interactive mode), prompt user
-    if not title or interactive:
-        print("\n--- Add New Task ---")
-        title = input("Enter task name: ").strip()
-        while not title:
-            print("Task name cannot be empty.")
-            title = input("Enter task name: ").strip()
-
-        p_input = input("Enter priority (High / Medium / Low) [default: Medium]: ").strip()
-        priority = p_input if p_input else "Medium"
-
-        d_input = input("Enter deadline (YYYY-MM-DD or 'today'/'tomorrow', leave empty for None): ").strip()
-        deadline = d_input if d_input else None
-
-    new_task = task_mgr.add_task(title=title, priority=priority, deadline=deadline)
-    print("\n" + "=" * 50)
-    print(" [SUCCESS] Task Added Successfully!")
-    print(f" ID       : #{new_task['id']}")
-    print(f" Title    : {new_task['title']}")
-    print(f" Priority : {new_task['priority']}")
-    print(f" Deadline : {new_task['deadline'] or 'No deadline'}")
-    print(f" Status   : {new_task['status']}")
-    print("=" * 50)
-
-
-def action_view_tasks(params: dict = None) -> None:
-    """Executes the View Tasks action, displaying Pending and Completed separately."""
-    all_tasks = task_mgr.get_all_tasks()
-    pending = [t for t in all_tasks if t.get("status") == "Pending"]
-    completed = [t for t in all_tasks if t.get("status") == "Completed"]
-
-    print("\n" + "=" * 70)
-    print("                     TASK BOARD                     ")
-    print("=" * 70)
-
-    # 1. Pending Tasks Section
-    print(f"\n[PENDING TASKS] ({len(pending)})")
-    print("-" * 70)
-    if not pending:
-        print("  (No pending tasks. You are all caught up!)")
-    else:
-        print(f" {'ID':<4} | {'Priority':<8} | {'Deadline':<12} | {'Task Title'}")
-        print("-" * 70)
-        for t in pending:
-            p_badge = t.get("priority", "Medium")
-            d_str = t.get("deadline") or "-"
-            print(f" #{t['id']:<3} | {p_badge:<8} | {d_str:<12} | {t['title']}")
-
-    # 2. Completed Tasks Section
-    print(f"\n[COMPLETED TASKS] ({len(completed)})")
-    print("-" * 70)
-    if not completed:
-        print("  (No completed tasks yet.)")
-    else:
-        print(f" {'ID':<4} | {'Priority':<8} | {'Deadline':<12} | {'Task Title'}")
-        print("-" * 70)
-        for t in completed:
-            p_badge = t.get("priority", "Medium")
-            d_str = t.get("deadline") or "-"
-            print(f" #{t['id']:<3} | {p_badge:<8} | {d_str:<12} | [DONE] {t['title']}")
-
-    print("=" * 70)
-
-
-def action_prioritize_tasks(params: dict = None) -> None:
-    """Executes the Prioritize Tasks action using TaskAnalysisTool."""
-    print("\n[AI Prioritizing Tasks] Analyzing urgency, deadlines and priority...")
-    result = task_analyzer.prioritize_tasks(use_ai=True)
-
-    print("\n" + "=" * 60)
-    print("               TASK PRIORITIZATION RECOMMENDATION               ")
-    print("=" * 60)
-    print(f" Analysis Engine : {result['source']}")
-    print("-" * 60)
-
-    task = result.get("recommended_task")
-    if not task:
-        print(f" {result.get('reasoning')}")
-    else:
-        print(" Recommended Task to Complete FIRST:")
-        print(f"   Task ID  : #{task['id']}")
-        print(f"   Title    : {task['title']}")
-        print(f"   Priority : {task['priority']}")
-        print(f"   Deadline : {task.get('deadline') or 'None'}")
-        print("-" * 60)
-        print(f" Explanation:\n   {result.get('reasoning')}")
-
-    print("=" * 60)
-
-
-def action_complete_task(params: dict = None, interactive: bool = False) -> None:
+def execute_agent_action(action: str, params: dict) -> dict:
     """
-    Executes the Complete Task action with human-in-the-loop confirmation.
+    Executes a chosen action programmatically and returns a structured result.
+    Used by Streamlit, CLI, and Web API.
     """
-    params = params or {}
-    task_id = params.get("task_id")
+    if action == "add_task":
+        title = params.get("title") or "New Task"
+        priority = params.get("priority") or "Medium"
+        deadline = params.get("deadline")
+        task = task_mgr.add_task(title=title, priority=priority, deadline=deadline)
+        return {
+            "success": True,
+            "message": f"Task #{task['id']} ('{task['title']}') added successfully with {task['priority']} priority.",
+            "data": task
+        }
 
-    # Prompt if task ID is missing
-    if task_id is None or interactive:
+    elif action == "view_tasks":
         pending = task_mgr.get_pending_tasks()
-        if not pending:
-            print("\nThere are no pending tasks to complete.")
-            return
+        completed = task_mgr.get_completed_tasks()
+        return {
+            "success": True,
+            "message": f"Task board: {len(pending)} pending and {len(completed)} completed task(s).",
+            "data": {"pending": pending, "completed": completed}
+        }
 
-        print("\nPending tasks:")
-        for t in pending:
-            print(f"  #{t['id']} - {t['title']} (Priority: {t['priority']})")
-
-        val = input("\nEnter Task ID to mark as completed (or 'c' to cancel): ").strip()
-        if val.lower() == "c":
-            print("Operation cancelled.")
-            return
-        try:
-            task_id = int(val)
-        except ValueError:
-            print("[Error] Invalid task ID. Must be a number.")
-            return
-
-    # Fetch task details for verification
-    task = task_mgr.get_task_by_id(task_id)
-    if not task:
-        print(f"\n[Error] Task ID #{task_id} not found.")
-        return
-
-    if task.get("status") == "Completed":
-        print(f"\n[Info] Task ID #{task_id} ('{task['title']}') is already completed.")
-        return
-
-    # HUMAN-IN-THE-LOOP CONFIRMATION
-    print(f"\nTarget Task: #{task['id']} - '{task['title']}' (Priority: {task['priority']}, Deadline: {task.get('deadline') or 'None'})")
-    confirm = input(f"Are you sure you want to mark Task #{task_id} as completed? (y/n): ").strip().lower()
-
-    if confirm in ["y", "yes"]:
-        success, msg, updated = task_mgr.mark_task_completed(task_id)
-        if success:
-            print(f"\n[SUCCESS] {msg}")
+    elif action == "prioritize_tasks":
+        res = task_analyzer.prioritize_tasks(use_ai=True)
+        if res.get("recommended_task"):
+            t = res["recommended_task"]
+            msg = f"Recommendation: Complete Task #{t['id']} ('{t['title']}') first. {res.get('reasoning')}"
         else:
-            print(f"\n[Error] {msg}")
+            msg = res.get("reasoning", "No pending tasks to prioritize.")
+        return {
+            "success": True,
+            "message": msg,
+            "data": res
+        }
+
+    elif action == "complete_task":
+        task_id = params.get("task_id")
+        if task_id is None:
+            return {"success": False, "message": "Please specify the Task ID to mark as completed.", "data": None}
+        success, msg, task = task_mgr.mark_task_completed(task_id)
+        return {"success": success, "message": msg, "data": task}
+
+    elif action == "daily_summary":
+        summary = task_analyzer.get_daily_summary()
+        msg = f"Summary: {summary['total_count']} total, {summary['completed_count']} completed, {summary['pending_count']} pending, {len(summary['urgent_tasks'])} urgent."
+        return {"success": True, "message": msg, "data": summary}
+
+    elif action == "exit":
+        return {"success": True, "message": "Goodbye! Have a productive day ahead.", "data": None}
+
     else:
-        print("\n[Cancelled] Task status unchanged.")
+        return {
+            "success": False,
+            "message": "I could not understand that intent. Try asking to add, view, complete, or prioritize tasks.",
+            "data": None
+        }
 
 
-def action_daily_summary(params: dict = None) -> None:
-    """Executes the Daily Summary action using TaskAnalysisTool."""
+# ==============================================================================
+# STREAMLIT WEB APPLICATION DASHBOARD
+# ==============================================================================
+
+def render_streamlit_app():
+    """
+    Renders the modern, full-featured Streamlit Web Dashboard.
+    Replaces blocking terminal input/print with rich Streamlit widgets.
+    """
+    import streamlit as st
+
+    # 1. Page Configuration
+    st.set_page_config(
+        page_title="Smart Daily Task Assistant",
+        page_icon="📋",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
+    # 2. Custom CSS styling
+    st.markdown("""
+        <style>
+        .metric-card {
+            background-color: #1e293b;
+            border-radius: 10px;
+            padding: 16px;
+            border: 1px solid #334155;
+            text-align: center;
+        }
+        .priority-high {
+            color: #ef4444;
+            font-weight: 700;
+        }
+        .priority-med {
+            color: #f59e0b;
+            font-weight: 700;
+        }
+        .priority-low {
+            color: #3b82f6;
+            font-weight: 700;
+        }
+        .badge-overdue {
+            background-color: #7f1d1d;
+            color: #fecaca;
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        .badge-due-today {
+            background-color: #78350f;
+            color: #fde68a;
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # Initialize Session State
+    if "agent_history" not in st.session_state:
+        st.session_state.agent_history = []
+    if "latest_prioritization" not in st.session_state:
+        st.session_state.latest_prioritization = None
+
+    # Load fresh data
     summary = task_analyzer.get_daily_summary()
+    pending_tasks = task_mgr.get_pending_tasks()
+    completed_tasks = task_mgr.get_completed_tasks()
+    ollama_status = is_ollama_available()
 
-    print("\n" + "=" * 55)
-    print("                    DAILY SUMMARY                   ")
-    print("=" * 55)
-    print(f" Today's Date      : {date.today().strftime('%A, %B %d, %Y')}")
-    print(f" Total Tasks       : {summary['total_count']}")
-    print(f" Completed Tasks   : {summary['completed_count']}")
-    print(f" Pending Tasks     : {summary['pending_count']}")
-    print("-" * 55)
-
-    # Highlight Urgent Tasks
-    urgent = summary.get("urgent_tasks", [])
-    print(f"\n[!] Urgent Tasks (Overdue or Due Today): {len(urgent)}")
-    if not urgent:
-        print("    None. You have no overdue or due-today tasks.")
-    else:
-        for t in urgent:
-            status_tag = "[OVERDUE]" if t.get("deadline") < date.today().strftime("%Y-%m-%d") else "[DUE TODAY]"
-            print(f"    * {status_tag} #{t['id']}: {t['title']} (Deadline: {t['deadline']})")
-
-    # Highlight High-Priority Pending Tasks
-    high = summary.get("high_priority_tasks", [])
-    print(f"\n[*] High-Priority Pending Tasks: {len(high)}")
-    if not high:
-        print("    None. No pending high-priority tasks.")
-    else:
-        for t in high:
-            d_str = t.get("deadline") or "No deadline"
-            print(f"    * #{t['id']}: {t['title']} (Deadline: {d_str})")
-
-    print("=" * 55)
-
-
-# ==============================================================================
-# SMART AI AGENT INTERFACE
-# ==============================================================================
-
-def run_smart_mode() -> None:
-    """
-    Interactive natural-language conversational mode powered by the AI agent.
-    Workflow:
-      User Input -> Understand Intent (Ollama/Fallback) -> Select Action ->
-      Execute Function/Tool -> Display Result
-    """
-    ollama_status = "ONLINE" if is_ollama_available() else "OFFLINE (Using Rule-Based Fallback)"
-    print("\n" + "=" * 65)
-    print("                     SMART AI AGENT MODE                    ")
-    print(f" Model Engine : {OLLAMA_MODEL} | Status: {ollama_status}")
-    print("=" * 65)
-    print("You can speak in natural English! Examples:")
-    print(" - 'Add my assignment submission task due tomorrow with high priority'")
-    print(" - 'Show my pending tasks'")
-    print(" - 'Which task should I complete first?'")
-    print(" - 'Mark task 2 as completed'")
-    print(" - 'Give me my daily summary'")
-    print(" - Type 'back' or 'exit' to return to the main menu.")
-    print("=" * 65)
-
-    while True:
-        try:
-            user_input = input("\n[Smart Assistant] What would you like to do? > ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nReturning to main menu.")
-            break
-
-        if not user_input:
-            continue
-
-        if user_input.lower() in ["back", "menu", "return"]:
-            print("Returning to main menu.")
-            break
-
-        print(f"\n[Agent Workflow]")
-        print(f" 1. User Input    : \"{user_input}\"")
-
-        # Step 2: Intent Understanding & Action Selection
-        decision = choose_action(user_input)
-        action = decision.get("action")
-        params = decision.get("params") or {}
-        engine = decision.get("engine", "Unknown")
-
-        print(f" 2. Understanding : Intent processed via [{engine}]")
-        print(f" 3. Action Chosen : {action}")
-        print(f" 4. Tool Execution: Dispatching to Python tool...")
-
-        # Step 3: Tool Execution
-        if action == "add_task":
-            action_add_task(params, interactive=False)
-        elif action == "view_tasks":
-            action_view_tasks(params)
-        elif action == "prioritize_tasks":
-            action_prioritize_tasks(params)
-        elif action == "complete_task":
-            action_complete_task(params, interactive=False)
-        elif action == "daily_summary":
-            action_daily_summary(params)
-        elif action == "exit":
-            print("\nExiting Smart Mode. Goodbye!")
-            break
+    # --- SIDEBAR ---
+    with st.sidebar:
+        st.title("⚙️ System Status")
+        if ollama_status:
+            st.success(f"🟢 **Ollama AI Online**\n\nModel: `{OLLAMA_MODEL}`")
         else:
-            print("\n[Agent] I couldn't recognize that command.")
-            print("Try asking me to add a task, show tasks, prioritize tasks, complete a task, or give a summary.")
+            st.info("🟠 **Rule-Based Fallback Engine**\n\nOffline Mode (Local / Streamlit Cloud)")
 
+        st.caption("Works seamlessly offline with built-in heuristic intent parsing and prioritization.")
+        st.divider()
 
-# ==============================================================================
-# MAIN APPLICATION CLI MENU
-# ==============================================================================
+        st.subheader("💡 Smart Agent Examples")
+        st.caption("You can paste or click these in **Smart AI Mode**:")
+        if st.button("➕ Add DBMS project due tomorrow (High)", use_container_width=True):
+            st.session_state.quick_prompt = "Add DBMS project due tomorrow with high priority"
+        if st.button("⭐ Which task should I do first?", use_container_width=True):
+            st.session_state.quick_prompt = "Which task should I complete first?"
+        if st.button("📊 Show daily summary", use_container_width=True):
+            st.session_state.quick_prompt = "Give me my daily summary"
 
-def print_menu() -> None:
-    """Displays the main command-line menu."""
-    print("\n" + "=" * 45)
-    print("         SMART DAILY TASK ASSISTANT          ")
-    print("=" * 45)
-    print(" 1. Add Task")
-    print(" 2. View All Tasks")
-    print(" 3. Prioritize Tasks (AI Recommender)")
-    print(" 4. Mark Task as Completed")
-    print(" 5. Daily Summary")
-    print(" 6. Smart AI Mode (Natural Language Agent)")
-    print(" 0. Exit")
-    print("=" * 45)
+        st.divider()
+        st.caption(f"📁 Storage: `tasks.json` ({len(task_mgr.get_all_tasks())} total records)")
 
+    # --- MAIN HEADER ---
+    st.title("📋 Smart Daily Task Assistant")
+    st.write("An Agentic AI assistant that prioritizes activities, tracks daily progress, and executes natural-language commands.")
 
-def main() -> None:
-    """Main application loop."""
-    print("\nWelcome to Smart Daily Task Assistant!")
-    print(f"Database: {TASKS_FILE}")
+    # --- TOP METRIC CARDS ---
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric(label="Total Tasks", value=summary["total_count"])
+    with m2:
+        st.metric(label="Pending Tasks", value=summary["pending_count"])
+    with m3:
+        st.metric(label="Completed Tasks", value=summary["completed_count"])
+    with m4:
+        st.metric(label="Urgent (Overdue/Today)", value=len(summary["urgent_tasks"]))
 
-    while True:
-        print_menu()
-        try:
-            choice = input("Enter your choice (0-6): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nExiting application. Have a productive day!")
-            sys.exit(0)
+    # Urgency Alerts
+    if summary["overdue_tasks"]:
+        overdue_titles = ", ".join([f"#{t['id']} {t['title']}" for t in summary["overdue_tasks"]])
+        st.error(f"🚨 **Overdue Tasks ({len(summary['overdue_tasks'])})**: {overdue_titles}")
+    if summary["due_today_tasks"]:
+        today_titles = ", ".join([f"#{t['id']} {t['title']}" for t in summary["due_today_tasks"]])
+        st.warning(f"⏰ **Due Today ({len(summary['due_today_tasks'])})**: {today_titles}")
 
-        if choice == "1":
-            action_add_task({}, interactive=True)
-        elif choice == "2":
-            action_view_tasks()
-        elif choice == "3":
-            action_prioritize_tasks()
-        elif choice == "4":
-            action_complete_task({}, interactive=True)
-        elif choice == "5":
-            action_daily_summary()
-        elif choice == "6":
-            run_smart_mode()
-        elif choice == "0":
-            print("\nThank you for using Smart Daily Task Assistant. Goodbye!")
-            sys.exit(0)
+    st.divider()
+
+    # --- MAIN NAVIGATION TABS ---
+    tab_board, tab_add, tab_prioritize, tab_smart, tab_summary = st.tabs([
+        "📋 Task Board",
+        "➕ Add Task",
+        "⭐ AI Prioritization",
+        "🤖 Smart AI Mode",
+        "📈 Daily Summary & Analytics"
+    ])
+
+    # --------------------------------------------------------------------------
+    # TAB 1: TASK BOARD
+    # --------------------------------------------------------------------------
+    with tab_board:
+        st.subheader("Pending Tasks")
+
+        # Priority filter & search
+        f_col1, f_col2 = st.columns([1, 2])
+        with f_col1:
+            p_filter = st.selectbox("Filter by Priority", ["All", "High", "Medium", "Low"], key="p_filter")
+        with f_col2:
+            search_query = st.text_input("🔍 Search Tasks", placeholder="Search task title...", key="search_query")
+
+        filtered_pending = pending_tasks
+        if p_filter != "All":
+            filtered_pending = [t for t in filtered_pending if t.get("priority") == p_filter]
+        if search_query:
+            filtered_pending = [t for t in filtered_pending if search_query.lower() in t.get("title", "").lower()]
+
+        if not filtered_pending:
+            if not pending_tasks:
+                st.success("🎉 You have no pending tasks! You are all caught up.")
+            else:
+                st.info("No tasks match your filter criteria.")
         else:
-            print("\n[Invalid Option] Please enter a number between 0 and 6.")
+            today_str = date.today().strftime("%Y-%m-%d")
+            for t in filtered_pending:
+                card = st.container(border=True)
+                with card:
+                    c1, c2, c3, c4 = st.columns([3, 1.2, 1.5, 1.2])
+                    with c1:
+                        st.markdown(f"**#{t['id']} - {t['title']}**")
+                    with c2:
+                        p = t.get("priority", "Medium")
+                        color_class = "priority-high" if p == "High" else ("priority-med" if p == "Medium" else "priority-low")
+                        st.markdown(f"<span class='{color_class}'>● {p}</span>", unsafe_allow_html=True)
+                    with c3:
+                        d = t.get("deadline")
+                        if not d:
+                            st.caption("No deadline")
+                        elif d < today_str:
+                            st.markdown(f"<span class='badge-overdue'>Overdue: {d}</span>", unsafe_allow_html=True)
+                        elif d == today_str:
+                            st.markdown(f"<span class='badge-due-today'>Due Today: {d}</span>", unsafe_allow_html=True)
+                        else:
+                            st.caption(f"Due: {d}")
+                    with c4:
+                        # Human-in-the-loop confirmation popover
+                        with st.popover("Complete"):
+                            st.write(f"Mark **Task #{t['id']}** as completed?")
+                            if st.button("Yes, Complete", key=f"btn_comp_{t['id']}", type="primary"):
+                                task_mgr.mark_task_completed(t['id'])
+                                st.toast(f"Task #{t['id']} marked as completed!", icon="✅")
+                                st.rerun()
+
+        st.subheader("Completed Tasks")
+        if not completed_tasks:
+            st.caption("No completed tasks yet.")
+        else:
+            with st.expander(f"View Completed Tasks ({len(completed_tasks)})", expanded=False):
+                for t in completed_tasks:
+                    c1, c2, c3, c4 = st.columns([3, 1.2, 1.5, 1.2])
+                    with c1:
+                        st.markdown(f"~~#{t['id']} - {t['title']}~~")
+                    with c2:
+                        st.caption(f"Priority: {t.get('priority')}")
+                    with c3:
+                        st.caption(f"Completed: {t.get('completed_at', 'Done')}")
+                    with c4:
+                        if st.button("Reopen", key=f"btn_reopen_{t['id']}", help="Mark back to Pending"):
+                            task_mgr.reopen_task(t['id'])
+                            st.toast(f"Task #{t['id']} reopened!", icon="🔄")
+                            st.rerun()
+
+    # --------------------------------------------------------------------------
+    # TAB 2: ADD TASK
+    # --------------------------------------------------------------------------
+    with tab_add:
+        st.subheader("Add a New Task")
+        with st.form("add_task_form", clear_on_submit=True):
+            new_title = st.text_input("Task Title / Description*", placeholder="e.g. Prepare presentation slides for Software Engineering")
+            col_p, col_d = st.columns(2)
+            with col_p:
+                new_priority = st.selectbox("Priority Level", ["High", "Medium", "Low"], index=1)
+            with col_d:
+                has_deadline = st.checkbox("Set a deadline date?")
+                new_deadline = None
+                if has_deadline:
+                    selected_date = st.date_input("Deadline Date", min_value=date.today())
+                    new_deadline = selected_date.strftime("%Y-%m-%d")
+
+            submit_btn = st.form_submit_button("➕ Add Task to List", use_container_width=True)
+
+            if submit_btn:
+                if not new_title.strip():
+                    st.error("Task title cannot be empty.")
+                else:
+                    task = task_mgr.add_task(title=new_title, priority=new_priority, deadline=new_deadline)
+                    st.success(f"Task #{task['id']} ('{task['title']}') successfully added!")
+                    st.rerun()
+
+    # --------------------------------------------------------------------------
+    # TAB 3: AI PRIORITIZATION
+    # --------------------------------------------------------------------------
+    with tab_prioritize:
+        st.subheader("AI Task Prioritization Recommender")
+        st.write("Analyzes your pending tasks based on deadlines, urgency, and priority levels to recommend which task to tackle first.")
+
+        p_col1, p_col2 = st.columns([1, 3])
+        with p_col1:
+            if st.button("🔍 Prioritize Now", type="primary", use_container_width=True):
+                with st.spinner("Analyzing tasks with AI / rule heuristics..."):
+                    st.session_state.latest_prioritization = task_analyzer.prioritize_tasks(use_ai=True)
+
+        if st.session_state.latest_prioritization:
+            rec = st.session_state.latest_prioritization
+            st.divider()
+            st.markdown(f"**Analysis Engine:** `{rec.get('source')}`")
+
+            task = rec.get("recommended_task")
+            if not task:
+                st.info(rec.get("reasoning", "No pending tasks to prioritize."))
+            else:
+                card = st.container(border=True)
+                with card:
+                    st.success("⭐ **RECOMMENDED TASK TO COMPLETE FIRST**")
+                    st.markdown(f"### #{task['id']}: {task['title']}")
+                    st.markdown(f"**Priority:** {task['priority']} | **Deadline:** {task.get('deadline') or 'None'}")
+                    st.divider()
+                    st.markdown(f"**Why this task?**\n\n{rec.get('reasoning')}")
+
+                    with st.popover("Mark as Completed"):
+                        st.write(f"Mark **Task #{task['id']}** as completed?")
+                        if st.button("Confirm Completion", key="btn_rec_comp", type="primary"):
+                            task_mgr.mark_task_completed(task['id'])
+                            st.session_state.latest_prioritization = None
+                            st.toast(f"Task #{task['id']} completed!", icon="🎉")
+                            st.rerun()
+
+    # --------------------------------------------------------------------------
+    # TAB 4: SMART AI AGENT MODE
+    # --------------------------------------------------------------------------
+    with tab_smart:
+        st.subheader("Smart AI Agent Mode")
+        st.caption("Interact using natural English instructions. The AI agent detects intent, extracts parameters, selects the appropriate tool, and updates your task board.")
+
+        # Quick Prompt injector from sidebar
+        preset_prompt = st.session_state.pop("quick_prompt", None)
+
+        # Chat interface
+        chat_container = st.container(height=350)
+        with chat_container:
+            if not st.session_state.agent_history:
+                st.info("👋 Ask anything! For example:\n- *'Add assignment submission due tomorrow with high priority'*\n- *'Which task should I complete first?'*\n- *'Mark task 1 as completed'*\n- *'Give me my daily summary'*")
+            for msg in st.session_state.agent_history:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+                    if "workflow" in msg:
+                        with st.expander("🔍 View Agent Decision Workflow"):
+                            wf = msg["workflow"]
+                            st.markdown(f"- **1. User Input:** \"{wf.get('input')}\"")
+                            st.markdown(f"- **2. Understanding:** Processed via `[{wf.get('engine')}]`")
+                            st.markdown(f"- **3. Action Selected:** `{wf.get('action')}`")
+                            st.markdown(f"- **4. Extracted Params:** `{wf.get('params')}`")
+
+        # Input box
+        user_prompt = st.chat_input("Enter natural-language instruction (e.g. 'Add lab exam revision due tomorrow high priority')...")
+        if preset_prompt:
+            user_prompt = preset_prompt
+
+        if user_prompt:
+            # 1. Record User Message
+            st.session_state.agent_history.append({"role": "user", "content": user_prompt})
+
+            # 2. Agent Workflow: choose_action()
+            decision = choose_action(user_prompt)
+            action = decision.get("action")
+            params = decision.get("params") or {}
+            engine = decision.get("engine", "Fallback")
+
+            # 3. Tool Execution
+            res = execute_agent_action(action, params)
+
+            # 4. Record Agent Message
+            workflow_info = {
+                "input": user_prompt,
+                "engine": engine,
+                "action": action,
+                "params": params
+            }
+            st.session_state.agent_history.append({
+                "role": "assistant",
+                "content": res["message"],
+                "workflow": workflow_info
+            })
+            st.rerun()
+
+    # --------------------------------------------------------------------------
+    # TAB 5: DAILY SUMMARY & ANALYTICS
+    # --------------------------------------------------------------------------
+    with tab_summary:
+        st.subheader("Daily Summary & Urgent Tasks Breakdown")
+        st.write(f"📅 **Date:** {date.today().strftime('%A, %B %d, %Y')}")
+
+        s_col1, s_col2 = st.columns(2)
+        with s_col1:
+            st.markdown("#### High Priority Pending Tasks")
+            high_tasks = summary.get("high_priority_tasks", [])
+            if not high_tasks:
+                st.caption("No high priority tasks pending.")
+            else:
+                for t in high_tasks:
+                    st.markdown(f"- **#{t['id']}**: {t['title']} *(Deadline: {t.get('deadline') or 'None'})*")
+
+        with s_col2:
+            st.markdown("#### Urgent Tasks (Overdue & Due Today)")
+            urg = summary.get("urgent_tasks", [])
+            if not urg:
+                st.caption("No urgent tasks. Everything is on schedule!")
+            else:
+                for t in urg:
+                    d_tag = "🔴 Overdue" if t.get("deadline") < date.today().strftime("%Y-%m-%d") else "🟡 Due Today"
+                    st.markdown(f"- **#{t['id']}**: {t['title']} — `{d_tag} ({t['deadline']})`")
 
 
-if __name__ == "__main__":
+# ==============================================================================
+# MAIN APPLICATION ENTRY POINT
+# ==============================================================================
+
+def is_running_in_streamlit() -> bool:
+    """
+    Detects whether this script is currently being run by Streamlit's script runner.
+    """
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        return get_script_run_ctx() is not None
+    except Exception:
+        return False
+
+
+def main():
+    """
+    Main entry point:
+    - If executed via `streamlit run main.py`, renders the Streamlit app.
+    - If executed via bare `python main.py`, automatically launches Streamlit in browser.
+    """
+    if is_running_in_streamlit():
+        render_streamlit_app()
+    else:
+        # User executed `python main.py` directly: launch Streamlit CLI
+        try:
+            import streamlit.web.cli as stcli
+            print("\n[Smart Daily Task Assistant] Launching Streamlit web application...")
+            sys.argv = ["streamlit", "run", os.path.abspath(__file__)]
+            sys.exit(stcli.main())
+        except ImportError:
+            print("[Error] Streamlit is not installed. Run: pip install streamlit")
+            sys.exit(1)
+
+
+# When executed by Streamlit runner (`streamlit run main.py`), top-level runs
+if is_running_in_streamlit():
+    render_streamlit_app()
+elif __name__ == "__main__":
     main()
